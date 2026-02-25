@@ -85,10 +85,16 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS customers (
             id TEXT PRIMARY KEY,
             email TEXT,
-            stripe_id TEXT
+            stripe_id TEXT,
+            account_id TEXT
         )
         """
     )
+    # ensure account_id column exists for older DBs
+    try:
+        cur.execute("ALTER TABLE customers ADD COLUMN account_id TEXT")
+    except Exception:
+        pass
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS subscriptions (
@@ -97,6 +103,29 @@ def init_db() -> None:
             stripe_id TEXT,
             status TEXT,
             price_cents INTEGER,
+            created_ts INTEGER
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS accounts (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            plan_id TEXT,
+            seats INTEGER DEFAULT 0,
+            created_ts INTEGER
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS invoices (
+            id TEXT PRIMARY KEY,
+            account_id TEXT,
+            amount_cents INTEGER,
+            period_start INTEGER,
+            period_end INTEGER,
             created_ts INTEGER
         )
         """
@@ -450,12 +479,18 @@ def create_customer(payload: dict, admin=Depends(require_jwt_admin)):
     try:
         cust = stripe.Customer.create(email=email)
         cid = cust.id
+        account_id = payload.get('account_id') if isinstance(payload, dict) else None
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("INSERT OR REPLACE INTO customers (id, email, stripe_id) VALUES (?, ?, ?)", (cid, email, cid))
+        # guard: ensure account_id column exists
+        try:
+            cur.execute("ALTER TABLE customers ADD COLUMN account_id TEXT")
+        except Exception:
+            pass
+        cur.execute("INSERT OR REPLACE INTO customers (id, email, stripe_id, account_id) VALUES (?, ?, ?, ?)", (cid, email, cid, account_id))
         conn.commit()
         conn.close()
-        return {"id": cid, "email": email}
+        return {"id": cid, "email": email, "account_id": account_id}
     except Exception as e:
         logger.exception("Stripe create customer failed")
         raise HTTPException(status_code=502, detail=str(e))
@@ -518,6 +553,27 @@ def create_subscription(payload: dict, admin=Depends(require_jwt_admin)):
                 conn.close()
                 raise HTTPException(status_code=502, detail="Failed to create price")
 
+        # enforce plan seat limits if customer is linked to an account
+        # guard: ensure account_id column exists for older DBs
+        try:
+            cur.execute("ALTER TABLE customers ADD COLUMN account_id TEXT")
+        except Exception:
+            pass
+        cur.execute("SELECT account_id FROM customers WHERE stripe_id=?", (stripe_id,))
+        crow = cur.fetchone()
+        acct_id = crow[0] if crow else None
+        if acct_id:
+            cur.execute("SELECT seats, plan_id FROM accounts WHERE id=?", (acct_id,))
+            arow = cur.fetchone()
+            if arow:
+                seats_allowed = arow[0] or 0
+                # count active subscriptions for this account
+                cur.execute("SELECT COUNT(*) FROM subscriptions s JOIN customers c ON s.stripe_id=c.stripe_id WHERE c.account_id=? AND s.status='active'", (acct_id,))
+                used = cur.fetchone()[0]
+                if used >= seats_allowed:
+                    conn.close()
+                    raise HTTPException(status_code=403, detail="Seat limit reached for account")
+
         # create subscription using price id
         try:
             subscription = stripe.Subscription.create(
@@ -569,6 +625,145 @@ def list_subscriptions(admin=Depends(require_jwt_admin)):
     return [dict(r) for r in rows]
 
 
+@app.get("/api/plans")
+def list_plans(admin=Depends(require_jwt_admin)):
+    """Return available subscription plans and feature summaries.
+
+    This endpoint is read-only and intended for admin/console use.
+    """
+    plans = [
+        {
+            "id": "basic",
+            "name": "Basic",
+            "price_per_user_month": 5,
+            "features": [
+                "core monitoring",
+                "basic reports",
+                "opt-in telemetry",
+            ],
+        },
+        {
+            "id": "advanced",
+            "name": "Advanced",
+            "price_per_user_month": 12,
+            "features": [
+                "integrations (email/chat/issue trackers)",
+                "productivity intelligence",
+                "dispute timelines",
+            ],
+        },
+        {
+            "id": "enterprise_ai",
+            "name": "Enterprise AI",
+            "price_per_user_month": 25,
+            "features": [
+                "AI coach for managers",
+                "advanced forecasting",
+                "priority support",
+            ],
+        },
+    ]
+    return {"plans": plans}
+
+
+@app.post("/api/accounts")
+def create_account(payload: dict, admin=Depends(require_jwt_admin)):
+    name = payload.get('name') if isinstance(payload, dict) else None
+    plan_id = payload.get('plan_id') if isinstance(payload, dict) else 'basic'
+    seats = int(payload.get('seats', 0)) if isinstance(payload, dict) else 0
+    if not name:
+        raise HTTPException(status_code=400, detail='Missing name')
+    import uuid
+    aid = str(uuid.uuid4())
+    ts = int(time.time())
+    conn = get_conn()
+    cur = conn.cursor()
+    # guard: ensure accounts table exists for older DBs
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS accounts (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            plan_id TEXT,
+            seats INTEGER DEFAULT 0,
+            created_ts INTEGER
+        )
+        """
+    )
+    conn.commit()
+    cur.execute("INSERT INTO accounts (id, name, plan_id, seats, created_ts) VALUES (?, ?, ?, ?, ?)", (aid, name, plan_id, seats, ts))
+    conn.commit()
+    conn.close()
+    return {"id": aid, "name": name, "plan_id": plan_id, "seats": seats}
+
+
+@app.get("/api/accounts/{acct_id}")
+def get_account(acct_id: str, admin=Depends(require_jwt_admin)):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id, name, plan_id, seats, created_ts FROM accounts WHERE id=?", (acct_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail='Account not found')
+    return dict(row)
+
+
+@app.post("/api/accounts/{acct_id}/plan")
+def change_account_plan(acct_id: str, payload: dict, admin=Depends(require_jwt_admin)):
+    plan_id = payload.get('plan_id') if isinstance(payload, dict) else None
+    if not plan_id:
+        raise HTTPException(status_code=400, detail='Missing plan_id')
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE accounts SET plan_id=? WHERE id=?", (plan_id, acct_id))
+    conn.commit()
+    conn.close()
+    return {"id": acct_id, "plan_id": plan_id}
+
+
+@app.post("/api/billing/usage")
+def report_usage(payload: dict, admin=Depends(require_jwt_admin)):
+    account_id = payload.get('account_id') if isinstance(payload, dict) else None
+    seats_used = int(payload.get('seats_used', 0)) if isinstance(payload, dict) else 0
+    if not account_id:
+        raise HTTPException(status_code=400, detail='Missing account_id')
+    # determine plan price
+    plan_prices = {'basic': 5, 'advanced': 12, 'enterprise_ai': 25}
+    conn = get_conn()
+    cur = conn.cursor()
+    # guard: ensure invoices table exists for older DBs
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS invoices (
+            id TEXT PRIMARY KEY,
+            account_id TEXT,
+            amount_cents INTEGER,
+            period_start INTEGER,
+            period_end INTEGER,
+            created_ts INTEGER
+        )
+        """
+    )
+    conn.commit()
+    cur.execute("SELECT plan_id FROM accounts WHERE id=?", (account_id,))
+    prow = cur.fetchone()
+    if not prow:
+        conn.close()
+        raise HTTPException(status_code=404, detail='Account not found')
+    plan_id = prow[0]
+    price = plan_prices.get(plan_id, 5)
+    amount_cents = seats_used * price * 100
+    import uuid
+    iid = str(uuid.uuid4())
+    ts = int(time.time())
+    # For simplicity, set period_start/end to now
+    cur.execute("INSERT INTO invoices (id, account_id, amount_cents, period_start, period_end, created_ts) VALUES (?, ?, ?, ?, ?, ?)", (iid, account_id, amount_cents, ts, ts, ts))
+    conn.commit()
+    conn.close()
+    return {"id": iid, "amount_cents": amount_cents}
+
+
 @app.post("/api/subscriptions/{sub_id}/cancel")
 def cancel_subscription(sub_id: str, admin=Depends(require_jwt_admin)):
     """Cancel a subscription both in Stripe and locally.
@@ -609,10 +804,22 @@ async def stripe_webhook(request: Request):
 
     For robust production use, verify signatures using `STRIPE_WEBHOOK_SECRET`.
     """
-    try:
-        payload = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
+    # If webhook secret configured, verify signature using Stripe helper
+    raw_body = await request.body()
+    sig_header = request.headers.get('Stripe-Signature')
+    secret = os.environ.get('STRIPE_WEBHOOK_SECRET')
+    if secret:
+        try:
+            evt = stripe.Webhook.construct_event(raw_body, sig_header, secret)
+            payload = evt
+        except Exception:
+            logger.exception("Stripe webhook signature verification failed")
+            raise HTTPException(status_code=400, detail="Invalid webhook signature")
+    else:
+        try:
+            payload = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid JSON")
 
     # Basic event handling
     etype = payload.get('type')
