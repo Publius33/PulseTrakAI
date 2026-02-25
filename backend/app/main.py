@@ -141,6 +141,30 @@ def init_db() -> None:
         )
         """
     )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dispute_reports (
+            id TEXT PRIMARY KEY,
+            customer_id TEXT,
+            title TEXT,
+            evidence_json TEXT,
+            timeline_json TEXT,
+            recommended_steps TEXT,
+            created_ts INTEGER
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS insights_results (
+            id TEXT PRIMARY KEY,
+            account_id TEXT,
+            payload_json TEXT,
+            summary_json TEXT,
+            created_ts INTEGER
+        )
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -847,6 +871,142 @@ async def stripe_webhook(request: Request):
     except Exception:
         logger.exception("Failed to process stripe webhook")
         raise HTTPException(status_code=500, detail="Webhook processing failed")
+
+
+@app.post("/api/disputes")
+def create_dispute(payload: dict, admin=Depends(require_jwt_admin)):
+    """Create a dispute protection report from provided evidence.
+
+    Payload keys: `customer_id`, `title`, `evidence` (dict with screenshots/comments/timestamps/messages/meeting_logs)
+    Returns created report id and generated timeline / recommended steps.
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid payload")
+    customer_id = payload.get('customer_id')
+    title = payload.get('title', 'Dispute Report')
+    evidence = payload.get('evidence', {})
+    import uuid
+    rid = str(uuid.uuid4())
+    ts = int(time.time())
+
+    # naive timeline generation: sort events by timestamp if available
+    timeline = []
+    try:
+        events = evidence.get('events', []) if isinstance(evidence, dict) else []
+        timeline = sorted(events, key=lambda e: e.get('timestamp', 0))
+    except Exception:
+        timeline = []
+
+    # recommended HR steps (simple heuristic)
+    recommended = []
+    if any('harass' in (m.get('text','').lower()) for m in evidence.get('messages', []) if isinstance(evidence.get('messages', []), list)):
+        recommended.append('Immediate HR review for harassment')
+    else:
+        recommended.append('Document and monitor; schedule manager conversation')
+
+    conn = get_conn()
+    cur = conn.cursor()
+    # guard: ensure dispute_reports table exists
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dispute_reports (
+            id TEXT PRIMARY KEY,
+            customer_id TEXT,
+            title TEXT,
+            evidence_json TEXT,
+            timeline_json TEXT,
+            recommended_steps TEXT,
+            created_ts INTEGER
+        )
+        """
+    )
+    cur.execute("INSERT INTO dispute_reports (id, customer_id, title, evidence_json, timeline_json, recommended_steps, created_ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (rid, customer_id, title, json.dumps(evidence), json.dumps(timeline), json.dumps(recommended), ts))
+    conn.commit()
+    conn.close()
+    return {"id": rid, "timeline": timeline, "recommended_steps": recommended}
+
+
+@app.get("/api/disputes/{report_id}")
+def get_dispute(report_id: str, admin=Depends(require_jwt_admin)):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id, customer_id, title, evidence_json, timeline_json, recommended_steps, created_ts FROM dispute_reports WHERE id=?", (report_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail='Report not found')
+    r = dict(row)
+    r['evidence'] = json.loads(r.pop('evidence_json') or '{}')
+    r['timeline'] = json.loads(r.pop('timeline_json') or '[]')
+    r['recommended_steps'] = json.loads(r.pop('recommended_steps') or '[]')
+    return r
+
+
+@app.post("/api/insights")
+def run_insights(payload: dict, admin=Depends(require_jwt_admin)):
+    """Run lightweight productivity intelligence. Payload may include `account_id` and `data`.
+
+    Returns mock `output_scores`, `time_allocation`, `bottlenecks`, `workload_forecast`.
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail='Invalid payload')
+    account_id = payload.get('account_id')
+    data = payload.get('data', {})
+    import uuid
+    iid = str(uuid.uuid4())
+    ts = int(time.time())
+
+    # Mock analysis logic
+    output_scores = { 'efficiency': 0.8, 'focus': 0.7 }
+    time_allocation = { 'meetings_pct': 0.35, 'deep_work_pct': 0.4, 'administrative_pct': 0.25 }
+    bottlenecks = [ { 'area': 'PR review', 'impact': 'high' } ]
+    workload_forecast = { 'next_30_days': 'increasing' }
+
+    summary = {
+        'output_scores': output_scores,
+        'time_allocation': time_allocation,
+        'bottlenecks': bottlenecks,
+        'workload_forecast': workload_forecast,
+    }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    # guard: ensure insights_results table exists
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS insights_results (
+            id TEXT PRIMARY KEY,
+            account_id TEXT,
+            payload_json TEXT,
+            summary_json TEXT,
+            created_ts INTEGER
+        )
+        """
+    )
+    cur.execute("INSERT INTO insights_results (id, account_id, payload_json, summary_json, created_ts) VALUES (?, ?, ?, ?, ?)", (iid, account_id, json.dumps(data), json.dumps(summary), ts))
+    conn.commit()
+    conn.close()
+    return { 'id': iid, 'summary': summary }
+
+
+# Simple AI coach templates (no DB required)
+COACH_TEMPLATES = [
+    {
+        'id': 'performance_concern',
+        'title': 'Discussing performance concerns',
+        'examples': {
+            'neutral': 'I wanted to talk about some recent observations regarding your performance...',
+            'ada_safe': 'I want to ensure we provide any accommodations you may need while discussing performance...',
+            'deescalation': 'I value your contributions; can we discuss ways to better support you?'
+        }
+    },
+]
+
+
+@app.get('/api/coach/templates')
+def list_coach_templates(admin=Depends(require_jwt_admin)):
+    return {'templates': COACH_TEMPLATES}
 
 
 @app.post("/api/payment/webhook")

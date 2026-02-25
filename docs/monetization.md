@@ -19,6 +19,12 @@ PulseTrakAI monetization strategy and feature set (proposed):
 - ADA-safe and harassment-safe language
 - Recommended interventions and conflict de-escalation suggestions
 
+Implementation notes (feature mapping):
+
+- Dispute Protection: store `screenshots`, `comments`, `timestamps`, `inappropriate_messages`, `meeting_logs` via `POST /api/disputes`. System will produce `behavior timelines`, unbiased documentation and recommended HR steps returned in the report.
+- Task + Productivity Intelligence: runtime analysis via `POST /api/insights` that accepts integrations metadata and returns `output_scores`, `time_allocation`, `bottlenecks` and `workload_forecast` in a JSON payload.
+- AI Coach: `GET /api/coach/templates` returns conversation templates with ADA-safe and harassment-safe variants and optional tone adjustments.
+
 Pricing (per user / month):
 
 - Basic: $5/user/mo — core monitoring, basic reports
