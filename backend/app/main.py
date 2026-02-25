@@ -15,6 +15,7 @@ import stripe
 import jwt
 from datetime import datetime, timedelta
 import json
+from . import analytics as analytics_module
 
 logger = logging.getLogger("pulsetrak")
 logging.basicConfig(level=logging.INFO)
@@ -143,6 +144,16 @@ def init_db() -> None:
     )
     cur.execute(
         """
+        CREATE TABLE IF NOT EXISTS alerts (
+            id TEXT PRIMARY KEY,
+            metric TEXT,
+            payload_json TEXT,
+            created_ts INTEGER
+        )
+        """
+    )
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS dispute_reports (
             id TEXT PRIMARY KEY,
             customer_id TEXT,
@@ -265,6 +276,22 @@ class UserOut(BaseModel):
 def on_startup():
     init_db()
     app.state.start_time = time.time()
+    # Start analytics worker only if explicitly enabled to avoid background threads in tests
+    if os.environ.get('ENABLE_ANALYTICS_WORKER') == '1':
+        import threading
+
+        def worker_loop():
+            while True:
+                try:
+                    # run lightweight analysis for a small set of metrics
+                    for m in ['page_view']:
+                        analytics_module.run_analysis_for_metric(m)
+                except Exception:
+                    logger.exception('Analytics worker error')
+                time.sleep(60)
+
+        t = threading.Thread(target=worker_loop, daemon=True)
+        t.start()
 
 
 @app.get("/health", response_model=PingResponse)
@@ -483,6 +510,41 @@ def create_payment_intent(payload: dict):
     except Exception as e:
         logger.exception("Stripe create intent failed")
         raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post('/api/ingest')
+def ingest(payload: dict, admin=Depends(require_jwt_admin)):
+    """Ingest a metric: {"name": "page_view", "value": 1, "ts": 123456}
+
+    This is a lightweight ingest endpoint for demo/PoC.
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail='Invalid payload')
+    name = payload.get('name')
+    try:
+        value = float(payload.get('value', 1))
+    except Exception:
+        value = 1.0
+    ts = payload.get('ts')
+    analytics_module.ingest_metric(name, value, ts)
+    return {'ok': True}
+
+
+@app.post('/api/analytics/run')
+def run_analytics(payload: dict = None, admin=Depends(require_jwt_admin)):
+    """Trigger analysis for a metric: {"metric":"page_view"} or run default.
+    """
+    metric = None
+    if isinstance(payload, dict):
+        metric = payload.get('metric')
+    metric = metric or 'page_view'
+    res = analytics_module.run_analysis_for_metric(metric)
+    return res
+
+
+@app.get('/api/alerts')
+def get_alerts(admin=Depends(require_jwt_admin)):
+    return {'alerts': analytics_module.list_alerts()}
 
 
 @app.post("/api/customers")
