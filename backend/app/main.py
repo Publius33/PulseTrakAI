@@ -512,6 +512,14 @@ def create_payment_intent(payload: dict):
         raise HTTPException(status_code=502, detail=str(e))
 
 
+@app.get('/api/stripe/config')
+def stripe_config():
+    """Return Stripe publishable key and whether Stripe is configured."""
+    pub = os.environ.get('STRIPE_PUBLISHABLE_KEY')
+    secret = os.environ.get('STRIPE_SECRET')
+    return { 'publishable_key': pub, 'ready': bool(secret and pub) }
+
+
 @app.post('/api/ingest')
 def ingest(payload: dict, admin=Depends(require_jwt_admin)):
     """Ingest a metric: {"name": "page_view", "value": 1, "ts": 123456}

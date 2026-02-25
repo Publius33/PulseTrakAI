@@ -1,0 +1,12 @@
+<svg width="220" height="70" viewBox="0 0 420 120" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .text { font-family: 'Inter', sans-serif; font-size: 42px; font-weight: 700; fill: #007AFF; }
+  </style>
+  <polyline points="10,70 40,70 55,40 75,100 95,20 115,70 145,70"
+            stroke="#007AFF"
+            stroke-width="10"
+            fill="none"
+            stroke-linecap="round"
+            stroke-linejoin="round" />
+  <text x="165" y="80" class="text">PulseTrakAI™</text>
+</svg>
