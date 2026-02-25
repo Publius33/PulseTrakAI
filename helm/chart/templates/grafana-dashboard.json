@@ -1,0 +1,10 @@
+{
+  "title": "PulseTrakAI - Page Views",
+  "panels": [
+    {
+      "type": "graph",
+      "title": "Page Views (opt-in)",
+      "targets": [ { "expr": "pulsetrak_page_views_total" } ]
+    }
+  ]
+}
