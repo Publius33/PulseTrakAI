@@ -1,3 +1,5 @@
+PulseTrak AI by PUBLIUS33™ — powerful, real-time AI monitoring and predictive analytics.
+
 Run the frontend locally:
 
 ```bash
