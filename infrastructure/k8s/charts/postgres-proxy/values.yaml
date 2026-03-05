@@ -1,0 +1,11 @@
+replicaCount: 1
+
+image:
+  repository: pgbouncer/pgbouncer
+  tag: latest
+
+service:
+  type: ClusterIP
+  port: 6432
+
+# © PUBLIUS33™ — PulseTrakAI™. All Rights Reserved.

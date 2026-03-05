@@ -1,0 +1,5 @@
+Ingress chart scaffold. Configure a single public endpoint and enable redirect HTTP->HTTPS.
+
+Prepare for integration with cloud WAF (AWS WAF or Cloudflare) and rate-limiting annotations.
+
+# © PUBLIUS33™ — PulseTrakAI™. All Rights Reserved.

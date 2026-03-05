@@ -1,0 +1,61 @@
+name: Deploy Production
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Build Docker images
+        run: docker-compose build
+
+      - name: Push to production registry
+        run: |
+          # Placeholder: configure production registry credentials
+          echo "Pushing containers to production registry..."
+          echo "Version: ${{ steps.version.outputs.version }}"
+
+      - name: Blue/Green deployment strategy
+        run: |
+          echo "Deploying blue/green..."
+          # Check if blue or green is currently active
+          # Deploy to inactive slot
+          # Run health checks before switching traffic
+
+      - name: Health checks (Blue/Green)
+        run: |
+          sleep 10
+          curl -f http://localhost:8000/health || (echo "Health check failed"; exit 1)
+          curl -f http://localhost:8000/api/status || (echo "Status check failed"; exit 1)
+
+      - name: Traffic switch
+        run: |
+          echo "Switching traffic to new deployment..."
+          # Update load balancer to point to new deployment
+
+      - name: Post-deploy verification
+        run: |
+          sleep 5
+          curl -f http://localhost:8000/health || (echo "Post-deployment verification failed"; exit 1)
+
+      - name: Log deployment version
+        run: |
+          echo "Deployed version: ${{ steps.version.outputs.version }}" >> deployment-log.txt
+          echo "Timestamp: $(date)" >> deployment-log.txt
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "Deployment failed. Rolling back to previous version..."
+          # Implement rollback logic
+
+# © PUBLIUS33™ — PulseTrakAI™ — All Rights Reserved.

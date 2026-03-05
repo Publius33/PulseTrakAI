@@ -1,0 +1,19 @@
+version: "3.8"
+services:
+  backend:
+    image: pulsetrakai/backend:latest
+    build: ./backend
+    ports:
+      - "8000:8000"
+  frontend:
+    image: pulsetrakai/frontend:latest
+    build: ./frontend
+    ports:
+      - "5173:80"
+  ml-engine:
+    image: pulsetrakai/ml-engine:latest
+    build: ./ml-engine
+    ports:
+      - "9000:9000"
+
+# © PUBLIUS33™ — PulseTrakAI™. All Rights Reserved.

@@ -1,0 +1,27 @@
+name: Docker Publish
+
+on:
+  workflow_run:
+    workflows: ["Build and Test"]
+    types:
+      - completed
+
+jobs:
+  publish:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to registry (placeholder)
+        run: echo "Login step (use secrets for REGISTRY creds)"
+
+      - name: Build and push images (placeholder)
+        run: |
+          echo "docker build/push backend, frontend, ml-engine"
+
+      - name: Trigger deployment
+        run: echo "Trigger deploy-production workflow or webhook"
+
+# © PUBLIUS33™ — PulseTrakAI™. All Rights Reserved.

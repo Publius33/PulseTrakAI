@@ -2,6 +2,13 @@ import React, { useEffect, useState } from 'react'
 import PulseLogo from './pulsetrak-logo.svg'
 import Billing from './Billing'
 import Alerts from './Alerts'
+import PulseHorizon from './PulseHorizon'
+import AnomalyStream from './AnomalyStream'
+import RiskGauge from './RiskGauge'
+import RecommendationsPanel from './RecommendationsPanel'
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://api.pulsetrak.ai'
+const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === '1'
 
 export default function App() {
   const [backendError, setBackendError] = useState('')
@@ -21,7 +28,7 @@ export default function App() {
 
   useEffect(() => {
     if (!consent) return
-    fetch('/api/analytics/track', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ event: 'page_view' }) }).catch(() => {})
+    fetch(`${API_BASE}/api/analytics/track`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ event: 'page_view' }) }).catch(() => {})
   }, [consent])
 
   function toggleConsent() {
@@ -34,9 +41,9 @@ export default function App() {
     setBackendError('')
     try {
       const [pRes, sRes, stRes] = await Promise.all([
-        fetch('/api/plans'),
-        fetch('/api/subscriptions'),
-        fetch('/api/status')
+        fetch(`${API_BASE}/api/plans`),
+        fetch(`${API_BASE}/api/subscriptions`),
+        fetch(`${API_BASE}/api/status`)
       ])
       if (!stRes.ok) {
         const j = await stRes.json().catch(() => ({}))
@@ -57,7 +64,7 @@ export default function App() {
 
   async function getToken() {
     try {
-      const r = await fetch('/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: adminPassword }) })
+      const r = await fetch(`${API_BASE}/api/admin/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: adminPassword }) })
       const j = await r.json().catch(() => ({}))
       // admin login returns { access_token: "..." }
       const token = j.access_token || j.token || j.accessToken
@@ -70,9 +77,9 @@ export default function App() {
     try {
       const headers = apiKey ? { 'X-API-Key': apiKey } : {}
       const [sRes, uRes, mRes] = await Promise.all([
-        fetch('/api/status'),
-        fetch('/api/users', { headers: { ...headers, 'X-Admin-Token': adminToken } }),
-        fetch('/api/metrics', { headers: { 'X-Admin-Token': adminToken } }),
+        fetch(`${API_BASE}/api/status`),
+        fetch(`${API_BASE}/api/users`, { headers: { ...headers, 'X-Admin-Token': adminToken } }),
+        fetch(`${API_BASE}/api/metrics`, { headers: { 'X-Admin-Token': adminToken } }),
       ])
       const s = await sRes.json().catch(() => ({}))
       const u = await uRes.json().catch(() => [])
@@ -85,7 +92,7 @@ export default function App() {
 
   return (
     <div style={{
-      maxWidth: 900,
+      maxWidth: 1100,
       margin: '40px auto',
       padding: 30,
       fontFamily: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
@@ -95,13 +102,25 @@ export default function App() {
       boxShadow: '0 10px 28px rgba(0,0,0,0.06)'
     }}>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 18, marginBottom: 10 }}>
-        <img src={PulseLogo} width={130} alt="PulseTrakAI Logo" />
+      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 18, alignItems: 'center', marginBottom: 18 }}>
         <div>
-          <h1 style={{ margin: 0, fontSize: 34, fontWeight: 700, color: '#222' }}>PulseTrakAI™</h1>
-          <p style={{ margin: 0, fontSize: 16, color: '#555' }}>AI-powered uptime, health & anonymous analytics</p>
+          <h1 style={{ margin: 0, fontSize: 36, fontWeight: 800, color: '#111' }}>AI-Powered Uptime & Predictive Monitoring</h1>
+          <p style={{ margin: '10px 0 16px', fontSize: 18, color: '#444' }}>Temporal Pulse Prediction Model™ (TPPM™) keeps your stack healthy before incidents happen.</p>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+            <a href="https://app.pulsetrak.ai/demo" style={{ padding: '12px 18px', background: '#007aff', color: '#fff', borderRadius: 10, fontWeight: 700, textDecoration: 'none' }}>Request Demo</a>
+            <a href="https://app.pulsetrak.ai/dashboard" style={{ padding: '12px 18px', background: '#0f172a', color: '#fff', borderRadius: 10, fontWeight: 700, textDecoration: 'none' }}>View Dashboard</a>
+          </div>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <img src={PulseLogo} width={180} alt="PulseTrakAI Logo" style={{ filter: 'drop-shadow(0 12px 24px rgba(0,0,0,0.08))' }} />
         </div>
       </div>
+
+      {DEMO_MODE && (
+        <div style={{ margin: '10px 0 12px', padding: 12, background: '#eef2ff', borderLeft: '4px solid #4f46e5', color: '#1f2937', fontSize: 14 }}>
+          Demo mode enabled: sample data is pre-seeded and write actions may be simulated.
+        </div>
+      )}
 
       <div style={{ margin: '20px 0', padding: 12, background: '#fff5f5', borderLeft: '4px solid #ff5a5a', color: '#b30000', fontSize: 14 }}>
         <strong>Backend error:</strong> <span>{backendError || (statusData && statusData.error) || 'None'}</span>
@@ -116,8 +135,18 @@ export default function App() {
         </p>
       </div>
 
-      <Billing adminToken={adminToken} />
-      <Alerts adminToken={adminToken} />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 18 }}>
+        <div>
+          <PulseHorizon metric={'cpu'} />
+          <AnomalyStream />
+          <RecommendationsPanel metric={'cpu'} />
+        </div>
+        <div>
+          <RiskGauge score={0.12} />
+          <Billing adminToken={adminToken} />
+          <Alerts adminToken={adminToken} />
+        </div>
+      </div>
 
       <div style={{ marginTop: 40, padding: 20, border: '1px solid #ddd', borderRadius: 12, background: '#fafafa' }}>
         <h2 style={{ fontSize: 20 }}>Admin Panel</h2>
@@ -143,9 +172,10 @@ export default function App() {
         <button onClick={async () => {
           try {
             const headers = adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
-            const res = await fetch('/api/billing/report', { headers })
+            const res = await fetch(`${API_BASE}/api/billing/report`, { headers })
             if (!res.ok) return
-            const txt = await res.text()
+            const 
+            txt = await res.text()
             const blob = new Blob([txt], { type: 'text/csv' })
             const url = URL.createObjectURL(blob)
             const a = document.createElement('a')
@@ -158,7 +188,7 @@ export default function App() {
 
       </div>
 
-      <div style={{ marginTop: 40, textAlign: 'center', fontSize: 12, color: '#888' }}>PulseTrakAI™ © {new Date().getFullYear()} PUBLIUS33 • All Rights Reserved.</div>
+      <div style={{ marginTop: 40, textAlign: 'center', fontSize: 12, color: '#888' }}>PulseTrakAI™ • AI uptime & anomaly intelligence • PUBLIUS33 • © {new Date().getFullYear()}</div>
 
     </div>
   )

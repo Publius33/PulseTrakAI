@@ -1,0 +1,17 @@
+controller:
+  replicas: 2
+  service:
+    type: LoadBalancer
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+rateLimiting:
+  enabled: true
+  requestsPerSecond: 100
+
+tls:
+  enabled: true
+
+# © PUBLIUS33™ — PulseTrakAI™. All Rights Reserved.

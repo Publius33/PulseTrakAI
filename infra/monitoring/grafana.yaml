@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+data:
+  dashboards.json: |
+    {
+      "dashboards": [
+        {"name": "Pulse Horizon", "description": "Pulse Horizon performance"},
+        {"name": "ML Latency", "description": "ML model prediction latency"},
+        {"name": "API Response", "description": "Backend API response times"},
+        {"name": "Anomaly Rate", "description": "System anomaly rate"},
+        {"name": "Stripe Errors", "description": "Stripe billing errors"}
+      ]
+    }
+
+# Grafana scaffold: provision dashboards via provisioning or dashboard-as-code.
+
+© PUBLIUS33™ — PulseTrakAI™ — All Rights Reserved.

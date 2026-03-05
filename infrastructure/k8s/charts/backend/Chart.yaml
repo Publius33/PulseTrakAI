@@ -1,0 +1,12 @@
+apiVersion: v2
+name: backend
+description: PulseTrakAI backend chart (Stage 3 scaffold)
+type: application
+version: 0.1.0
+appVersion: "1.0"
+apiVersion: v2
+name: backend
+version: 0.1.0
+appVersion: "1.0"
+# © PUBLIUS33™ — PulseTrakAI™. All Rights Reserved.
+

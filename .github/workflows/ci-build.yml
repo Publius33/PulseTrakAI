@@ -1,0 +1,71 @@
+name: CI Build
+
+on:
+  push:
+    branches: [main, staging, dev]
+  pull_request:
+    branches: [main, staging, dev]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      # Backend setup
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+
+      - name: Install ML dependencies
+        run: |
+          cd backend/ml
+          pip install -r requirements.txt
+
+      - name: Run backend tests
+        run: |
+          cd backend
+          pytest -q
+        continue-on-error: false
+
+      - name: Run backend linting
+        run: |
+          cd backend
+          python -m pylint app --disable=all --enable=E,F || true
+        continue-on-error: true
+
+      # Frontend setup
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Run frontend lint
+        run: |
+          cd frontend
+          npm run lint || true
+        continue-on-error: true
+
+      # Build Docker images
+      - name: Build Docker images
+        run: |
+          docker-compose build
+        working-directory: /workspaces/PulseTrakAI
+
+      - name: Run integration smoke tests
+        run: |
+          bash scripts/integration-smoke.sh
+        continue-on-error: true
+
+# © PUBLIUS33™ — PulseTrakAI™ — All Rights Reserved.

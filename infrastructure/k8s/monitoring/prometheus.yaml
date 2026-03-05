@@ -1,0 +1,11 @@
+# Placeholder Prometheus deployment for PulseTrakAI
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+
+# © PUBLIUS33™ — PulseTrakAI™. All Rights Reserved.

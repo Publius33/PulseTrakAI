@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promtail-config
+data:
+  promtail.yaml: |
+    server:
+      http_listen_port: 9080
+    clients:
+      - url: http://loki:3100/loki/api/v1/push
+    positions:
+      filename: /tmp/positions.yaml
+    scrape_configs:
+      - job_name: system
+        static_configs:
+          - targets:
+              - localhost
+            labels:
+              job: varlogs
+
+# Promtail scaffold for shipping logs to Loki; configure filesystem mounts and labels for ML prediction events, rate-limit logs, and subscription lifecycle actions.
+
+© PUBLIUS33™ — PulseTrakAI™ — All Rights Reserved.

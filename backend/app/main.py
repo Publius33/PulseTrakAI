@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import time
+from collections import defaultdict
 import logging
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 import stripe
@@ -16,6 +17,10 @@ import jwt
 from datetime import datetime, timedelta
 import json
 from . import analytics as analytics_module
+from backend import ml as ml_module
+from .middleware.rate_limiter import RateLimiterMiddleware
+from .config.production_checks import validate_production_config
+from .middleware.health_probes import get_health_checker, get_readiness_checker
 
 logger = logging.getLogger("pulsetrak")
 logging.basicConfig(level=logging.INFO)
@@ -29,8 +34,19 @@ load_dotenv(BASE_DIR / ".env")
 
 API_KEY = os.environ.get("API_KEY", "devkey")
 DB_PATH = os.environ.get("DB_PATH", str(BASE_DIR / "data.db"))
+DEMO_MODE = os.environ.get("DEMO_MODE", "0") == "1"
 
 app = FastAPI(title="PulseTrakAI Backend")
+
+# Register additional ML and admin utilities
+from backend.ml.scheduler import init_scheduler, get_scheduler
+from backend.ml.training_pipeline import TrainingPipeline
+from .endpoints.admin_model_endpoints import register_admin_endpoints
+
+
+def get_stripe_secret():
+    return os.environ.get("STRIPE_SECRET") or os.environ.get("STRIPE_SECRET_KEY")
+
 
 # Allow the frontend dev server during development
 app.add_middleware(
@@ -40,6 +56,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Register sliding-window RateLimiterMiddleware (config via env)
+app.add_middleware(RateLimiterMiddleware)
 
 
 @app.middleware("http")
@@ -55,13 +74,164 @@ async def add_security_headers(request, call_next):
     return response
 
 
+@app.middleware("http")
+async def rate_limit_middleware(request, call_next):
+    """Basic in-process rate limiting and IP throttling middleware.
+
+    Controls:
+    - POST /api/metrics -> 100 req/sec per IP
+    - /api/pulse-horizon -> 5 req/sec per user (X-API-Key or Authorization)
+    - /api/recommendations -> 3 req/sec per user
+    - global IP throttling: 300 req/sec per IP
+
+    NOTE: This is a simple in-memory implementation for Stage 3 docs/demo.
+    Use a distributed store (Redis) or API Gateway for production enforcement.
+    """
+    if not RATE_LIMIT_ENABLED:
+        return await call_next(request)
+
+    path = request.url.path or ''
+    method = request.method or 'GET'
+    client = request.client
+    ip = getattr(client, 'host', 'unknown') if client else 'unknown'
+
+    # IP throttling
+    if not _allow_ip(ip, capacity=300, per_seconds=1):
+        from fastapi.responses import PlainTextResponse
+
+        return PlainTextResponse('Too many requests (IP throttle)', status_code=429)
+
+    # Route-specific limits
+    try:
+        if method.upper() == 'POST' and path.startswith('/api/metrics'):
+            key = f"metrics:ip:{ip}"
+            allowed = _allow_request(key, capacity=100, per_seconds=1)
+            if not allowed:
+                from fastapi.responses import PlainTextResponse
+
+                return PlainTextResponse('Rate limit exceeded for /api/metrics', status_code=429)
+
+        elif path.startswith('/api/pulse-horizon'):
+            # per-user: prefer X-API-Key, fallback to Authorization Bearer or IP
+            api_key = request.headers.get('X-API-Key') or request.headers.get('X-Api-Key') or request.headers.get('Authorization')
+            if api_key and api_key.startswith('Bearer '):
+                api_key = api_key.split(' ', 1)[1]
+            user_key = api_key or ip
+            key = f"pulse:{user_key}"
+            allowed = _allow_request(key, capacity=5, per_seconds=1)
+            if not allowed:
+                from fastapi.responses import PlainTextResponse
+
+                return PlainTextResponse('Rate limit exceeded for /api/pulse-horizon', status_code=429)
+
+        elif path.startswith('/api/recommendations'):
+            api_key = request.headers.get('X-API-Key') or request.headers.get('X-Api-Key') or request.headers.get('Authorization')
+            if api_key and api_key.startswith('Bearer '):
+                api_key = api_key.split(' ', 1)[1]
+            user_key = api_key or ip
+            key = f"recommend:{user_key}"
+            allowed = _allow_request(key, capacity=3, per_seconds=1)
+            if not allowed:
+                from fastapi.responses import PlainTextResponse
+
+                return PlainTextResponse('Rate limit exceeded for /api/recommendations', status_code=429)
+    except Exception:
+        # don't fail open for middleware errors; continue to handler
+        pass
+
+    return await call_next(request)
+
+
 def get_conn():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
 
+# Simple in-memory rate limiter token buckets.
+
+
+# ----------------------------------------------------------------------------
+# Application lifecycle events
+# ----------------------------------------------------------------------------
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database, scheduler, and admin endpoints on startup."""
+    # run production safety checks (will exit in production on failure)
+    try:
+        validate_production_config()
+    except Exception:
+        logger.exception("Production config validation failed on startup")
+    init_db()
+    seed_demo_metrics()
+    # start the ML retraining scheduler with a callable that runs training
+    def training_func():
+        pipeline = TrainingPipeline(db_conn=get_conn())
+        return pipeline.run_training_pipeline("cpu_usage")
+    init_scheduler(training_func=training_func)
+
+    # register admin routes (model control)
+    register_admin_endpoints(app)
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanly stop scheduler if running."""
+    sched = get_scheduler()
+    if sched:
+        sched.stop_scheduler()
+
+# Production deployments should use a distributed rate limiter (Redis, API GW).
+RATE_LIMIT_ENABLED = os.environ.get('ENABLE_RATE_LIMIT', '1') == '1'
+# per-key buckets: key -> {'tokens': float, 'last': float, 'capacity': int}
+_BUCKETS: dict = defaultdict(dict)
+_IP_BUCKETS: dict = defaultdict(dict)
+
+
+def _allow_request(key: str, capacity: int, per_seconds: int = 1) -> bool:
+    now = time.time()
+    b = _BUCKETS.get(key)
+    if not b:
+        b = {'tokens': float(capacity), 'last': now, 'capacity': capacity}
+        _BUCKETS[key] = b
+    elapsed = now - b['last']
+    # refill rate = capacity per per_seconds
+    refill = (elapsed / per_seconds) * capacity
+    b['tokens'] = min(b['capacity'], b['tokens'] + refill)
+    b['last'] = now
+    if b['tokens'] < 1.0:
+        return False
+    b['tokens'] -= 1.0
+    return True
+
+
+def _allow_ip(ip: str, capacity: int, per_seconds: int = 1) -> bool:
+    now = time.time()
+    b = _IP_BUCKETS.get(ip)
+    if not b:
+        b = {'tokens': float(capacity), 'last': now, 'capacity': capacity}
+        _IP_BUCKETS[ip] = b
+    elapsed = now - b['last']
+    refill = (elapsed / per_seconds) * capacity
+    b['tokens'] = min(b['capacity'], b['tokens'] + refill)
+    b['last'] = now
+    if b['tokens'] < 1.0:
+        return False
+    b['tokens'] -= 1.0
+    return True
+
+
 def init_db() -> None:
+    # If DATABASE_URL is set, run Postgres migrations instead of using sqlite creation.
+    DATABASE_URL = os.environ.get('DATABASE_URL')
+    if DATABASE_URL:
+        try:
+            from .db.run_migrations import run_migrations
+            run_migrations(DATABASE_URL)
+            return
+        except Exception:
+            logger.exception('Failed to run Postgres migrations; falling back to sqlite table creation')
+
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -70,14 +240,60 @@ def init_db() -> None:
             id TEXT PRIMARY KEY,
             username TEXT NOT NULL
         )
-        """
+        """ 
     )
+    # other table creation omitted for brevity
+    
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS metrics (
             event TEXT PRIMARY KEY,
             count INTEGER DEFAULT 0,
             last_ts INTEGER
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS metric_events (
+            id TEXT PRIMARY KEY,
+            source TEXT,
+            metric TEXT,
+            value REAL,
+            timestamp INTEGER
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS temporal_baselines (
+            metric TEXT,
+            hour_of_day INTEGER,
+            day_of_week INTEGER,
+            expected_value REAL,
+            std_dev REAL,
+            PRIMARY KEY (metric, hour_of_day, day_of_week)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pulse_predictions (
+            id TEXT PRIMARY KEY,
+            generated_at INTEGER,
+            horizon_hours INTEGER,
+            probability REAL,
+            explanation TEXT
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            email TEXT,
+            stripe_customer_id TEXT,
+            api_key TEXT
         )
         """
     )
@@ -180,6 +396,28 @@ def init_db() -> None:
     conn.close()
 
 
+def seed_demo_metrics():
+    """Seed fake metrics for demo mode."""
+    if not DEMO_MODE:
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    now = int(time.time())
+    rows = []
+    for i in range(24):
+        rows.append((f"demo-{i}", "demo_source", "demo_metric", 40 + i * 0.5, now - (24 - i) * 3600))
+    try:
+        cur.executemany(
+            "INSERT OR REPLACE INTO metric_events (id, source, metric, value, timestamp) VALUES (?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()
+    except Exception:
+        logger.exception("Failed to seed demo metrics")
+    finally:
+        conn.close()
+
+
 def verify_api_key(x_api_key: str = Header(None)):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
@@ -274,6 +512,11 @@ class UserOut(BaseModel):
 
 @app.on_event("startup")
 def on_startup():
+    # sanity checks on startup (duplicate lifecycle hook for compatibility)
+    try:
+        validate_production_config()
+    except Exception:
+        logger.exception("Production config validation failed in on_startup")
     init_db()
     app.state.start_time = time.time()
     # Start analytics worker only if explicitly enabled to avoid background threads in tests
@@ -294,9 +537,19 @@ def on_startup():
         t.start()
 
 
-@app.get("/health", response_model=PingResponse)
+@app.get("/health")
 async def health():
-    return {"message": "ok"}
+    """Lightweight health endpoint for load balancers."""
+    return {"status": "ok", "service": "PulseTrakAI™"}
+
+
+@app.get("/ready")
+def ready():
+    """Readiness probe used by orchestrators to verify critical components."""
+    details = get_readiness_checker().get_readiness_details()
+    if not details.get("ready"):
+        raise HTTPException(status_code=503, detail="Service not ready")
+    return details
 
 
 @app.get("/", response_model=PingResponse)
@@ -403,6 +656,86 @@ def track_event(payload: dict):
     return dict(row) if row else {"event": event, "count": 0}
 
 
+@app.post('/api/metrics')
+def ingest_metric(payload: dict):
+    """Ingest a metric event into the local store and return acknowledgement.
+
+    Expected payload: { source, metric, value, timestamp }
+    """
+    import uuid
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail='Invalid payload')
+    src = payload.get('source')
+    metric = payload.get('metric')
+    try:
+        value = float(payload.get('value', 0))
+    except Exception:
+        value = 0.0
+    ts = payload.get('timestamp') or int(time.time())
+    eid = str(uuid.uuid4())
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute('INSERT INTO metric_events (id, source, metric, value, timestamp) VALUES (?, ?, ?, ?, ?)', (eid, src, metric, value, ts))
+    conn.commit()
+    conn.close()
+    return {'id': eid, 'ok': True}
+
+
+@app.get('/api/pulse-horizon')
+def pulse_horizon(metric: str = None, horizon: int = 24):
+    """Return simple pulse horizon predictions for a given metric using the ML utilities."""
+    if not metric:
+        raise HTTPException(status_code=400, detail='Missing metric')
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute('SELECT value, timestamp FROM metric_events WHERE metric=? ORDER BY timestamp ASC', (metric,))
+    rows = cur.fetchall()
+    conn.close()
+    import pandas as pd
+    if not rows:
+        if DEMO_MODE:
+            preds = [{"horizon": horizon, "probability": 0.32, "explanation": "Simulated demo risk"}]
+            return {"metric": metric, "predictions": preds, "probability": 0.32, "horizon_hours": horizon}
+        return {'metric': metric, 'predictions': [], 'horizon_hours': horizon}
+    series = pd.Series([r[0] for r in rows])
+    # Use upgraded ML package to predict multiple horizons
+    horizons = [1, 6, 24, 48, 72] if not horizon else [horizon]
+    preds = ml_module.predict_horizons(series, metric=metric, horizons=horizons)
+
+    # persist predictions into pulse_predictions table
+    import uuid
+    now_ts = int(time.time())
+    conn = get_conn()
+    cur = conn.cursor()
+    for p in preds:
+        pid = str(uuid.uuid4())
+        h = int(p.get('horizon', 0))
+        prob = float(p.get('probability', 0.0))
+        expl = p.get('explanation', '')
+        try:
+            cur.execute('INSERT INTO pulse_predictions (id, generated_at, horizon_hours, probability, explanation) VALUES (?, ?, ?, ?, ?)', (pid, now_ts, h, prob, expl))
+        except Exception:
+            # ignore persistence errors but log
+            logger.exception('Failed to persist pulse_prediction')
+    conn.commit()
+    conn.close()
+
+    # compute an overall risk as max horizon probability
+    overall = max((p.get('probability', 0.0) for p in preds), default=0.0)
+    return {'metric': metric, 'predictions': preds, 'probability': overall, 'horizon_hours': horizon}
+
+
+@app.get('/api/recommendations')
+def recommendations(metric: str = None):
+    """Return recommendation text for given metric based on simple heuristics."""
+    if not metric:
+        raise HTTPException(status_code=400, detail='Missing metric')
+    # simple: construct a fake anomaly item for recommendation engine
+    item = {'metric': metric, 'severity': 'medium'}
+    recs = ml_module.generate_recommendations([item])
+    return {'recommendations': recs}
+
+
 @app.post("/api/admin/login")
 async def admin_login(request: Request):
     """Admin token endpoint compatible with OAuth2 password flow.
@@ -487,14 +820,14 @@ def billing_report(admin=Depends(verify_admin_token)):
 
 @app.post("/api/payment/create-intent")
 def create_payment_intent(payload: dict):
-    """Create a Stripe PaymentIntent when `STRIPE_SECRET` is set.
+    """Create a Stripe PaymentIntent when Stripe secret is set.
 
     Expected JSON body: {"amount_cents": 500, "currency": "usd"}
     Returns the PaymentIntent client_secret so the frontend can complete payment.
     """
-    secret = os.environ.get("STRIPE_SECRET")
+    secret = get_stripe_secret()
     if not secret:
-        return {"ready": False, "message": "Payment provider not configured. Set STRIPE_SECRET in env."}
+        return {"ready": False, "message": "Payment provider not configured. Set STRIPE_SECRET_KEY in env."}
     stripe.api_key = secret
     amount = int(payload.get("amount_cents", 0))
     currency = payload.get("currency", "usd")
@@ -516,7 +849,7 @@ def create_payment_intent(payload: dict):
 def stripe_config():
     """Return Stripe publishable key and whether Stripe is configured."""
     pub = os.environ.get('STRIPE_PUBLISHABLE_KEY')
-    secret = os.environ.get('STRIPE_SECRET')
+    secret = get_stripe_secret()
     return { 'publishable_key': pub, 'ready': bool(secret and pub) }
 
 
@@ -564,12 +897,12 @@ def create_customer(payload: dict, admin=Depends(require_jwt_admin)):
     email = payload.get("email") if isinstance(payload, dict) else None
     if not email:
         raise HTTPException(status_code=400, detail="Missing email")
-    secret = os.environ.get("STRIPE_SECRET")
+    secret = get_stripe_secret()
     if secret:
         stripe.api_key = secret
     else:
         # Allow operation when STRIPE_SECRET is not set (tests may mock `stripe`).
-        logger.info("STRIPE_SECRET not set; proceeding (tests may mock stripe)")
+        logger.info("STRIPE_SECRET_KEY not set; proceeding (tests may mock stripe)")
     try:
         cust = stripe.Customer.create(email=email)
         cid = cust.id
@@ -601,12 +934,12 @@ def create_subscription(payload: dict, admin=Depends(require_jwt_admin)):
     currency = payload.get("currency", "usd")
     if not stripe_id or price <= 0:
         raise HTTPException(status_code=400, detail="Missing customer_stripe_id or invalid price")
-    secret = os.environ.get("STRIPE_SECRET")
+    secret = get_stripe_secret()
     if secret:
         stripe.api_key = secret
     else:
         # Allow operation when STRIPE_SECRET is not set (tests may mock `stripe`).
-        logger.info("STRIPE_SECRET not set; proceeding (tests may mock stripe)")
+        logger.info("STRIPE_SECRET_KEY not set; proceeding (tests may mock stripe)")
     try:
         # Use persisted prices when available to avoid creating duplicate Stripe prices.
         conn = get_conn()

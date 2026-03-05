@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "postgres-proxy.fullname" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "postgres-proxy.name" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "postgres-proxy.name" . }}
+    spec:
+      containers:
+        - name: pgbouncer
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          ports:
+            - containerPort: 6432
+          # © PUBLIUS33™ — PulseTrakAI™. All Rights Reserved.

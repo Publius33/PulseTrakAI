@@ -1,0 +1,8 @@
+apiVersion: v2
+name: pulsetrakai
+description: PulseTrakAI full application Helm chart (Stage 4 scaffold)
+type: application
+version: 0.1.0
+appVersion: "1.0"
+
+© PUBLIUS33™ — PulseTrakAI™ — All Rights Reserved.

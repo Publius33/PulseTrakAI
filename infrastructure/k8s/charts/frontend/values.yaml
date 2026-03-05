@@ -1,0 +1,17 @@
+replicaCount: 2
+
+image:
+  repository: pulsetrak/frontend
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  hosts:
+    - app.pulsetrak.ai
+
+# © PUBLIUS33™ — PulseTrakAI™. All Rights Reserved.

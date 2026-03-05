@@ -1,0 +1,41 @@
+replicaCount: 2
+
+image:
+  repository: pulsetrak/backend
+  tag: latest
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: false
+  annotations: {}
+  hosts: []
+"# © PUBLIUS33™ — PulseTrakAI™. All Rights Reserved."
+replicaCount: 2
+image:
+  repository: pulsetrakai/backend
+  tag: latest
+  pullPolicy: IfNotPresent
+service:
+  type: ClusterIP
+  port: 8000
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+# © PUBLIUS33™ — PulseTrakAI™. All Rights Reserved.

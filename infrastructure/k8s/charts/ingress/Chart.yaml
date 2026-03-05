@@ -1,0 +1,13 @@
+apiVersion: v2
+name: ingress
+description: Ingress controller + rate-limiting scaffold
+type: application
+version: 0.1.0
+appVersion: "1.0"
+# © PUBLIUS33™ — PulseTrakAI™. All Rights Reserved.
+apiVersion: v2
+name: ingress
+version: 0.1.0
+appVersion: "1.0"
+
+# © PUBLIUS33™ — PulseTrakAI™. All Rights Reserved.

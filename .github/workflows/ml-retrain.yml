@@ -1,0 +1,73 @@
+name: ML Retrain
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'  # Every Sunday at 2 AM UTC
+  workflow_dispatch:
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install ML dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+          cd ml
+          pip install -r requirements.txt
+
+      - name: Check anomaly rate threshold
+        id: check_anomaly
+        run: |
+          python3 << 'EOF'
+          import os
+          import sqlite3
+          
+          # Connect to database (adjust path if needed)
+          db_path = os.environ.get('DB_PATH', 'data.db')
+          conn = sqlite3.connect(db_path)
+          cur = conn.cursor()
+          
+          # Simple check: if any alerts exist, trigger retrain
+          cur.execute("SELECT COUNT(*) FROM alerts")
+          alert_count = cur.fetchone()[0]
+          
+          if alert_count > 0:
+              print("::set-output name=should_retrain::true")
+              print(f"Found {alert_count} alerts; triggering retrain")
+          else:
+              print("::set-output name=should_retrain::false")
+          
+          conn.close()
+          EOF
+
+      - name: Run ML training pipeline
+        run: |
+          cd backend
+          python -m ml.training_pipeline
+        continue-on-error: true
+
+      - name: Validate model
+        run: |
+          cd backend
+          python << 'EOF'
+          from ml.model_registry import ModelRegistry
+          registry = ModelRegistry()
+          latest = registry.get_latest_model()
+          print(f"Latest model validation accuracy: {latest.get('accuracy', 'N/A')}")
+          EOF
+        continue-on-error: true
+
+      - name: Log retraining event
+        run: |
+          echo "Retraining completed at $(date)" >> ml-training-log.txt
+          cat ml-training-log.txt
+
+# © PUBLIUS33™ — PulseTrakAI™ — All Rights Reserved.

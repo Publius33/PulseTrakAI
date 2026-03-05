@@ -1,0 +1,52 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: pulsetrak
+      POSTGRES_USER: pulsetrak
+      POSTGRES_PASSWORD: pulsetrak
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DB_PATH: /data/data.db
+      DATABASE_URL: postgres://pulsetrak:pulsetrak@postgres:5432/pulsetrak
+      API_KEY: devkey
+      ADMIN_PASSWORD: adminpass
+      ADMIN_JWT_SECRET: changeme
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+
+  ml:
+    build:
+      context: ./backend/ml
+      dockerfile: Dockerfile
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./backend/ml:/app
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+
+volumes:
+  db-data:
+
+# © PUBLIUS33™ — PulseTrakAI™. All Rights Reserved.
