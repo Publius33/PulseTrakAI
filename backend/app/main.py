@@ -540,7 +540,8 @@ def on_startup():
 @app.get("/health")
 async def health():
     """Lightweight health endpoint for load balancers."""
-    return {"status": "ok", "service": "PulseTrakAI™"}
+    # Include message key for test harness compatibility while retaining existing fields
+    return {"message": "ok", "status": "ok", "service": "PulseTrakAI™"}
 
 
 @app.get("/ready")
